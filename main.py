@@ -3,20 +3,28 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 import keepa
 import requests
-import json # Included for better error handling visibility
+import os
+from dotenv import load_dotenv  # Optional: for local development
 
-# NOTE: This is a pure FastAPI/Keepa implementation.
+# Load environment variables (for local development)
+load_dotenv()
 
 app = FastAPI(
     title="Amazon Storefront Analyzer API",
     description="Analyze seller storefronts by Seller ID, optionally filtered by Category ID, using Keepa + OptiSage with strict category filtering.",
-    version="1.1.1" # Version update to reflect strict filtering
+    version="1.1.1"
 )
 
-# --- Hardcoded configuration ---
-# WARNING: Exposing API keys is insecure. These should be loaded from environment variables.
-HARDCODED_KEEPA_API_KEY = "7hmcbb7q1m72lsrnv8m7ka81eum391tiv37g7qgue731e54f02nacqeo05uq8qrs"
-HARDCODED_OPTISAGE_TOKEN = "vb"
+# --- Environment Variable Configuration ---
+KEEPA_API_KEY = os.getenv("KEEPA_API_KEY")
+OPTISAGE_TOKEN = os.getenv("OPTISAGE_TOKEN")
+
+# Validate that required environment variables are set
+if not KEEPA_API_KEY:
+    raise RuntimeError("KEEPA_API_KEY environment variable is required")
+if not OPTISAGE_TOKEN:
+    raise RuntimeError("OPTISAGE_TOKEN environment variable is required")
+
 MAX_PRODUCTS = 30
 
 # Marketplace domain mapping
@@ -38,13 +46,11 @@ MARKETPLACE_NUMERIC = {
     'CA': 7
 }
 
-
 # --- Request Model ---
 class SellerRequest(BaseModel):
     seller_id: str = Field(..., description="The Amazon Seller ID (e.g., A3I41TQZK5ELJT).")
     marketplace: str = Field("US", description="The Amazon marketplace domain (e.g., US, UK, DE).")
     category_id: Optional[int] = Field(None, description="Optional: A specific Keepa Category ID to restrict the search (e.g., 3760911).")
-
 
 # --- OptiSage helper ---
 class OptiSageAPI:
@@ -76,7 +82,6 @@ class OptiSageAPI:
                 return {'success': False, 'error': f"API Error {resp.status_code}", 'details': resp.text}
         except requests.RequestException as e:
             return {'success': False, 'error': f"Request failed: {str(e)}"}
-
 
 # --- Keepa helpers ---
 def get_seller_asins(keepa_key: str, seller_id: str, domain: str, max_asins: int = 50, category_id: Optional[int] = None) -> List[str]:
@@ -144,7 +149,6 @@ def get_product_details_batch(keepa_key: str, asins: List[str], domain: str) -> 
     except Exception as e:
         raise RuntimeError(f"Product details error: {e}")
 
-
 def get_category_name(keepa_key: str, category_id: int, domain: str) -> str:
     try:
         api = keepa.Keepa(keepa_key)
@@ -153,7 +157,6 @@ def get_category_name(keepa_key: str, category_id: int, domain: str) -> str:
         return category_obj.get('name', 'Unknown Category') if category_obj else 'Unknown Category'
     except:
         return 'Category Lookup Failed'
-
 
 def parse_eligibility_result(eligibility_data: Dict, asin: str) -> Dict:
     if not eligibility_data:
@@ -176,7 +179,6 @@ def parse_eligibility_result(eligibility_data: Dict, asin: str) -> Dict:
     except Exception as e:
         return {'status': '🔧 Parse Error', 'reason': f'Failed to parse eligibility: {str(e)}'}
 
-
 # --- Main endpoint with manual filtering ---
 @app.post("/analyze_seller", summary="Analyze seller storefront")
 def analyze_seller(req: SellerRequest):
@@ -189,7 +191,7 @@ def analyze_seller(req: SellerRequest):
     # 1) Get ASINs (Keepa filtering applied here, but might be loose)
     try:
         asins = get_seller_asins(
-            HARDCODED_KEEPA_API_KEY, 
+            KEEPA_API_KEY,  # Using environment variable
             req.seller_id, 
             domain=marketplace, 
             max_asins=MAX_PRODUCTS,
@@ -204,7 +206,7 @@ def analyze_seller(req: SellerRequest):
 
     # 2) Get full product details
     try:
-        products = get_product_details_batch(HARDCODED_KEEPA_API_KEY, asins, domain=marketplace)
+        products = get_product_details_batch(KEEPA_API_KEY, asins, domain=marketplace)  # Using environment variable
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=f"Keepa Product Details Error: {str(e)}")
 
@@ -217,7 +219,7 @@ def analyze_seller(req: SellerRequest):
         # 3a. Get Category Name
         if cid and cid != 'N/A':
             try:
-                category_name = get_category_name(HARDCODED_KEEPA_API_KEY, int(cid), domain=marketplace)
+                category_name = get_category_name(KEEPA_API_KEY, int(cid), domain=marketplace)  # Using environment variable
                 p['category_name'] = category_name
             except Exception:
                 p['category_name'] = 'Category lookup failed'
@@ -239,7 +241,7 @@ def analyze_seller(req: SellerRequest):
     # 4) Check eligibility on the final, filtered list
     filtered_asins = [p.get('asin') for p in final_products]
     
-    opti = OptiSageAPI(HARDCODED_OPTISAGE_TOKEN)
+    opti = OptiSageAPI(OPTISAGE_TOKEN)  # Using environment variable
     eligibility_data = opti.check_seller_eligibility(req.seller_id, filtered_asins, marketplace)
     
     if not eligibility_data.get('success'):
