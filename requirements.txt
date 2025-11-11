@@ -3,3 +3,4 @@ uvicorn
 keepa
 requests
 gunicorn
+python-dotenv
