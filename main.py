@@ -11,8 +11,8 @@ load_dotenv()
 
 app = FastAPI(
     title="Amazon Storefront Analyzer API",
-    description="Analyze seller storefronts by Seller ID, optionally filtered by Category ID, using Keepa + OptiSage with strict category filtering.",
-    version="1.1.1"
+    description="Analyze seller storefronts by Seller ID, optionally filtered by Category ID, using Keepa + OptiSage with strict category filtering. (v1.1.2 - URL Update)",
+    version="1.1.2"
 )
 
 # --- Environment Variable Configuration ---
@@ -97,6 +97,22 @@ def get_seller_asins(keepa_key: str, seller_id: str, domain: str, max_asins: int
     except Exception as e:
         raise RuntimeError(f"ASIN fetch error: {e}")
 
+def get_amazon_product_url(asin: str, marketplace: str) -> str:
+    """Constructs the standard Amazon product URL from ASIN and marketplace."""
+    domain_suffix_map = {
+        "US": "com",
+        "UK": "co.uk",
+        "DE": "de",
+        "FR": "fr",
+        "JP": "co.jp",
+        "CA": "ca"
+    }
+    
+    # Default to .com if marketplace is unknown
+    domain_suffix = domain_suffix_map.get(marketplace.upper(), "com")
+    
+    return f"https://www.amazon.{domain_suffix}/dp/{asin}"
+
 def get_product_details_batch(keepa_key: str, asins: List[str], domain: str) -> List[Dict]:
     if not asins:
         return []
@@ -104,21 +120,15 @@ def get_product_details_batch(keepa_key: str, asins: List[str], domain: str) -> 
         api = keepa.Keepa(keepa_key)
         products = api.query(asins, domain=domain, stats=90)
         product_details = []
+        
         for product in products:
-            if 'asin' not in product:
+            asin = product.get('asin')
+            if not asin:
                 continue
             
             stats = product.get('stats', {})
             current_data = stats.get('current', [0]*25)
             
-            # --- IMAGE URL EXTRACTION ---
-            image_url = None
-            if product.get('image'):
-                image_url = product['image']
-            elif product.get('imagesCSV'):
-                image_path_segment = product['imagesCSV'].split(',')[0]
-                image_url = f"https://m.media-amazon.com/images/I/{image_path_segment}"
-
             # --- ROBUST PRICE EXTRACTION LOGIC ---
             current_price_cents = 0
             if current_data[0] > 0: current_price_cents = current_data[0]
@@ -132,7 +142,7 @@ def get_product_details_batch(keepa_key: str, asins: List[str], domain: str) -> 
             review_count = product.get('reviewCount', 0)
             
             details = {
-                'asin': product.get('asin'),
+                'asin': asin,
                 'title': product.get('title', 'N/A'),
                 'brand': product.get('brand', 'N/A'),
                 'category_id': product.get('rootCategory', 'N/A'),
@@ -140,9 +150,10 @@ def get_product_details_batch(keepa_key: str, asins: List[str], domain: str) -> 
                 'sales_rank': sales_rank or 0,
                 'rating_value': rating_value,  
                 'review_count': review_count,
-                'rating_display': f"{rating_value:.1f}/5 ({review_count:,} reviews)", 
+                'rating_display': f"{rating_value:.1f}/5 ({review_count:,} reviews)",  
                 'current_price': f"${current_price:.2f}" if current_price else 'N/A',
-                'image_url': image_url
+                # 🟢 UPDATED: This now returns the product's main page URL, not the image URL
+                'product_url': get_amazon_product_url(asin, domain) 
             }
             product_details.append(details)
         return product_details
@@ -192,8 +203,8 @@ def analyze_seller(req: SellerRequest):
     try:
         asins = get_seller_asins(
             KEEPA_API_KEY,  # Using environment variable
-            req.seller_id, 
-            domain=marketplace, 
+            req.seller_id,  
+            domain=marketplace,  
             max_asins=MAX_PRODUCTS,
             category_id=req.category_id
         )
@@ -263,10 +274,11 @@ def analyze_seller(req: SellerRequest):
             "Velocity": "🚀 YES (< 50K)" if p.get('sales_rank', 999999) < 50000 else "SLOW (> 50K)",
             "Eligibility": parsed['status'],
             "Comment": parsed['reason'],
-            "Rating": p.get('rating_display', '0.0/5 (0 reviews)'), 
-            "Reviews": str(p.get('review_count', 'N/A')), 
+            "Rating": p.get('rating_display', '0.0/5 (0 reviews)'),  
+            "Reviews": str(p.get('review_count', 'N/A')),  
             "Price": p.get('current_price', 'N/A'),
-            "ImageURL": p.get('image_url', 'N/A')
+            # 🟢 UPDATED: Key changed to ProductURL
+            "ProductURL": p.get('product_url', 'N/A')
         })
 
     return {
